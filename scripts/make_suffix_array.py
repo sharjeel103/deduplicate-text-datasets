@@ -113,4 +113,4 @@ if not os.path.exists(OUTPUT_TABLE) or os.path.getsize(OUTPUT_TABLE) % data_size
     sys.exit(1)
 
 print(f"Suffix array built successfully: {OUTPUT_TABLE}")
-```
+
