@@ -1,4 +1,4 @@
-```python
+
 # Modified for Kaggle WSL-compatible suffix array creation
 # Edits:
 # 1. Forced total_jobs and jobs_at_once to 16 for all data sizes
