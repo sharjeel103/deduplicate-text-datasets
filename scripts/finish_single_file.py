@@ -16,7 +16,7 @@ import sys
 original = sys.argv[1]
 remove_file = sys.argv[2]
 deduped = sys.argv[3]
-
+print('pehla')
 remove = []
 fin = open(remove_file)
 for line in fin:
@@ -24,10 +24,10 @@ for line in fin:
 for line in fin:
     remove.append(list(map(int,line.split())))
 remove = remove[::-1]
-
+print('dusra')
 ds = open(original,"rb")
 new_ds = open(deduped,"wb")
-
+print('tesra')
 start = 0
 while len(remove) > 0:
     a,b = remove.pop()
@@ -35,3 +35,4 @@ while len(remove) > 0:
     ds.seek(b)
     start = b
 new_ds.write(ds.read())
+print('bat khatm')
