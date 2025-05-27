@@ -1,11 +1,16 @@
+# Copyright 2021 Google LLC
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-# Modified for Kaggle WSL-compatible suffix array creation
-# Edits:
-# 1. Forced total_jobs and jobs_at_once to 16 for all data sizes
-# 2. Switched binary path to release: target/release/dedup_dataset
-# 3. Redirected tmp output to /kaggle/working/tmp (writable)
-# 4. Ensured TMP_DIR exists
-# 5. Added OUTPUT_TABLE argument and replacement logic
 
 import os
 import time
@@ -13,104 +18,96 @@ import sys
 import multiprocessing as mp
 import numpy as np
 
-# Input arguments
-#   sys.argv[1]: data file path
-#   sys.argv[2]: output table binary path (optional)
-DATA_FILE = sys.argv[1]
-OUTPUT_TABLE = sys.argv[2] if len(sys.argv) > 2 else f"{DATA_FILE}.table.bin"
+data_size = os.path.getsize(sys.argv[1])
 
-# Setup temporary directory in writable Kaggle working path
-TMP_DIR = "/kaggle/working/tmp"
-os.makedirs(TMP_DIR, exist_ok=True)
+HACK = 100000
 
-# Force consistent parallelism
-total_jobs = 16
-jobs_at_once = 16
-HACK = 100000  # overlap bytes to catch boundary duplicates
 
-# Compute data size and chunk size
-data_size = os.path.getsize(DATA_FILE)
-S = data_size // total_jobs
 started = []
 
-# STEP 1: Generate suffix-array parts
+if data_size > 10e9:
+    total_jobs = 4
+    jobs_at_once = 4
+elif data_size > 1e9:
+    total_jobs = 4
+    jobs_at_once = 4
+elif data_size > 10e6:
+    total_jobs = 4
+    jobs_at_once = 4
+else:
+    total_jobs = 1
+    jobs_at_once = 1
+
+S = data_size//total_jobs
+
+
 for jobstart in range(0, total_jobs, jobs_at_once):
     wait = []
-    for i in range(jobstart, min(jobstart + jobs_at_once, total_jobs)):
-        s = i * S
-        e = min((i + 1) * S + HACK, data_size)
-        part_file = f"{DATA_FILE}.part.{s}-{e}"
-        cmd = (
-            f"./target/release/dedup_dataset make-part"
-            f" --data-file {DATA_FILE} --start-byte {s} --end-byte {e}"
-        )
+    for i in range(jobstart,jobstart+jobs_at_once):
+        s, e = i*S, min((i+1)*S+HACK, data_size)
+        cmd = "./target/debug/dedup_dataset make-part --data-file %s --start-byte %d --end-byte %d"%(sys.argv[1], s, e)
+        started.append((s, e))
         print(cmd)
-        started.append((s, e, part_file))
         wait.append(os.popen(cmd))
+        
         if e == data_size:
             break
-    print("Waiting for jobs to finish...")
-    [p.read() for p in wait]
 
-# STEP 2: Verify parts and rerun failures
-def verify_parts(parts):
-    failed = []
-    for s, e, part_file in parts:
-        table_file = f"{part_file}.table.bin"
-        if (
-            not os.path.exists(part_file)
-            or not os.path.exists(table_file)
-            or os.path.getsize(table_file) == 0
-        ):
-            failed.append((s, e, part_file))
-    return failed
+    print("Waiting for jobs to finish")
+    [x.read() for x in wait]
 
-print("Verifying part files...")
+print("Checking all wrote correctly")
+
 while True:
-    failed = verify_parts(started)
-    if not failed:
-        break
-    print(f"Rerunning {len(failed)} failed jobs...")
+    files = ["%s.part.%d-%d"%(sys.argv[1],s, e) for s,e in started]
+    
     wait = []
-    for s, e, _ in failed:
-        cmd = (
-            f"./target/release/dedup_dataset make-part"
-            f" --data-file {DATA_FILE} --start-byte {s} --end-byte {e}"
-        )
-        print(cmd)
-        wait.append(os.popen(cmd))
-    [p.read() for p in wait]
+    for x,(s,e) in zip(files,started):
+        go = False
+        if not os.path.exists(x):
+            print("GOGO")
+            go = True
+        else:
+            size_data = os.path.getsize(x)
+            FACT = np.ceil(np.log(size_data)/np.log(2)/8)
+            print("FACT", FACT,size_data*FACT, os.path.getsize(x+".table.bin"))
+            if not os.path.exists(x) or not os.path.exists(x+".table.bin") or os.path.getsize(x+".table.bin") == 0 or size_data*FACT != os.path.getsize(x+".table.bin"):
+                go = True
+        if go:
+            cmd = "./target/debug/dedup_dataset make-part --data-file %s --start-byte %d --end-byte %d"%(sys.argv[1], s, e)
+            print(cmd)
+            wait.append(os.popen(cmd))
+            if len(wait) >= jobs_at_once:
+                break
+    print("Rerunning", len(wait), "jobs because they failed.")
+    [x.read() for x in wait]
     time.sleep(1)
+    if len(wait) == 0:
+        break
+        
 
-# STEP 3: Merge suffix trees
-print("Merging suffix trees...")
-# Clean previous merges in TMP_DIR
-for f in os.listdir(TMP_DIR):
-    if f.startswith("out.table.bin"):
-        os.remove(os.path.join(TMP_DIR, f))
+print("Merging suffix trees")
 
-files = [f"{DATA_FILE}.part.{s}-{e}" for s, e, _ in started]
-suffix_arg = " --suffix-path ".join(files)
-merge_cmd = (
-    f"./target/release/dedup_dataset merge"
-    f" --output-file {os.path.join(TMP_DIR, 'out.table.bin')}"
-    f" --suffix-path {suffix_arg} --num-threads {mp.cpu_count()}"
-)
-print(merge_cmd)
-pipe = os.popen(merge_cmd)
+os.popen("rm tmp/out.table.bin.*").read()
+
+torun = " --suffix-path ".join(files)
+print("./target/debug/dedup_dataset merge --output-file %s --suffix-path %s --num-threads %d"%("tmp/out.table.bin", torun, mp.cpu_count()))
+pipe = os.popen("./target/debug/dedup_dataset merge --output-file %s --suffix-path %s --num-threads %d"%("tmp/out.table.bin", torun, mp.cpu_count()))
+output = pipe.read()
 if pipe.close() is not None:
-    print("Merge failed. Ensure ulimit -Sn is sufficient.")
-    sys.exit(1)
+    print("Something went wrong with merging.")
+    print("Please check that you ran with ulimit -Sn 100000")
+    exit(1)
+#exit(0)
+print("Now merging individual tables")
+os.popen("cat tmp/out.table.bin.* > tmp/out.table.bin").read()
+print("Cleaning up")
+os.popen("mv tmp/out.table.bin %s.table.bin"%sys.argv[1]).read()
 
-# STEP 4: Finalize and move table
-print("Finalizing table binary...")
-final_tmp = os.path.join(TMP_DIR, 'out.table.bin')
-os.replace(final_tmp, OUTPUT_TABLE)
-
-# STEP 5: Validate
-if not os.path.exists(OUTPUT_TABLE) or os.path.getsize(OUTPUT_TABLE) % data_size != 0:
-    print("Error: Output table binary invalid.")
-    sys.exit(1)
-
-print(f"Suffix array built successfully: {OUTPUT_TABLE}")
-
+if os.path.exists(sys.argv[1]+".table.bin"):
+    if os.path.getsize(sys.argv[1]+".table.bin")%os.path.getsize(sys.argv[1]) != 0:
+        print("File size is wrong")
+        exit(1)
+else:
+    print("Failed to create table")
+    exit(1)
